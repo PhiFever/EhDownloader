@@ -5,21 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/carlmjohnson/requests"
-	"io/ioutil"
+	"github.com/spf13/cast"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	parallelism = 5 //页面处理的并发量
+	Parallelism = 5 //页面处理的并发量
 	DelayMs     = 330
 )
 
@@ -145,44 +142,6 @@ func GetFileTotal(dirPath string, fileSuffixes []string) int {
 	return count
 }
 
-// GetBeginIndex 用于获取指定目录下指定格式和后缀的文件中最大的序号，用于计算剩余图片数（目前只支持`数字_数字.后缀`的格式）
-func GetBeginIndex(dirPath string, fileSuffixes []string) int {
-	files, err := os.ReadDir(dirPath)
-	if err != nil {
-		fmt.Println("Error reading directory:", err)
-		return 0
-	}
-
-	maxIndex := 0
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		for _, suffix := range fileSuffixes {
-			if strings.HasSuffix(file.Name(), suffix) {
-				name := strings.TrimSuffix(file.Name(), suffix)
-				parts := strings.Split(name, "_")
-				if len(parts) != 2 {
-					continue
-				}
-
-				index, err := strconv.Atoi(parts[0])
-				if err != nil {
-					continue
-				}
-
-				if index > maxIndex {
-					maxIndex = index
-				}
-			}
-		}
-	}
-
-	return maxIndex
-}
-
 // ReadListFile 用于按行读取列表文件，返回一个字符串切片
 func ReadListFile(filePath string) ([]string, error) {
 	var list []string
@@ -206,52 +165,6 @@ func ReadListFile(filePath string) ([]string, error) {
 	return list, nil
 }
 
-// SaveFile 用于保存文件
-func SaveFile(filePath string, data []byte) error {
-	file, err := os.Create(filePath)
-	//fmt.Println(filePath)
-	if err != nil {
-		return err
-	}
-	defer func(file *os.File) {
-		err := file.Close()
-		ErrorCheck(err)
-	}(file)
-
-	_, err = file.Write(data)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// SaveImagesWithRequest 通过requests库更方便的保存imageInfoList中的所有图片
-func SaveImagesWithRequest(c *http.Client, h http.Header, imageInfoList []ImageInfo, saveDir string) {
-	dir, err := filepath.Abs(saveDir)
-	ErrorCheck(err)
-	err = os.MkdirAll(dir, os.ModePerm)
-	ErrorCheck(err)
-
-	for _, data := range imageInfoList {
-		filePath, err := filepath.Abs(filepath.Join(dir, data.Title))
-		ErrorCheck(err)
-		err = requests.
-			URL(data.Url).
-			Client(c).
-			ToFile(filePath).
-			Headers(h).
-			Fetch(context.Background())
-		if err != nil {
-			log.Printf("Error saving image: %s by error %v", data.Title, err)
-		} else {
-			log.Println("Image saved:", data.Title)
-		}
-		time.Sleep(time.Millisecond * time.Duration(DelayMs))
-	}
-
-}
-
 func SaveImagesWithMultiRequest(c *http.Client, h http.Header, imageInfoList []ImageInfo, saveDir string) {
 	dir, err := filepath.Abs(saveDir)
 	ErrorCheck(err)
@@ -259,7 +172,7 @@ func SaveImagesWithMultiRequest(c *http.Client, h http.Header, imageInfoList []I
 	ErrorCheck(err)
 
 	// Use a buffered channel as a semaphore to limit the number of goroutines running simultaneously
-	semaphore := make(chan struct{}, parallelism)
+	semaphore := make(chan struct{}, Parallelism)
 	var wg sync.WaitGroup
 
 	for _, data := range imageInfoList {
@@ -292,63 +205,10 @@ func SaveImagesWithMultiRequest(c *http.Client, h http.Header, imageInfoList []I
 	wg.Wait()
 }
 
-// ExtractSubstringFromText 按照Pattern在text里匹配，找到了就返回匹配到的部分
-func ExtractSubstringFromText(pattern string, text string) (number string, err error) {
-	regex, err := regexp.Compile(pattern)
-	if err != nil {
-		return "", err
-	}
-
-	match := regex.FindStringSubmatch(text)
-	if match != nil {
-		number = match[1]
-		return number, nil
-	} else {
-		return "", fmt.Errorf("在pattern中未找到匹配的数字")
-	}
-}
-
-func CheckUpdate(lastUpdateTime string, newTime string) bool {
-	layout := "2006-01-02" //时间格式模板
-	parsedDate1, err := time.Parse(layout, lastUpdateTime)
-	if err != nil {
-		fmt.Println("日期解析错误:", err)
-		return true
-	}
-	parsedDate2, err := time.Parse(layout, newTime)
-	if err != nil {
-		fmt.Println("日期解析错误:", err)
-		return true
-	}
-
-	if parsedDate1.Before(parsedDate2) {
-		return true
-	} else if parsedDate1.After(parsedDate2) {
-		fmt.Println("解析的日期晚于当前日期，galleryInfo.json文件异常")
-		return true
-	} else {
-		return false
-	}
-}
-
-// ElementInSlice 判断slice中是否存在某个item
-func ElementInSlice(value interface{}, array interface{}) bool {
-	switch reflect.TypeOf(array).Kind() {
-	case reflect.Slice:
-		s := reflect.ValueOf(array)
-		for i := 0; i < s.Len(); i++ {
-			if reflect.DeepEqual(value, s.Index(i).Interface()) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// checkSequentialFileNames 检查指定目录中是否包含从1到maxNumber的连续数字命名的文件。
-func checkSequentialFileNames(directory string, maxNumber int) (bool, error) {
+// CheckSequentialFileNames 检查指定目录中是否包含从1到maxNumber的连续数字命名的文件。
+func CheckSequentialFileNames(directory string, maxNumber int) (bool, error) {
 	// 读取目录中的所有文件和子目录（不会递归到子目录）
-	files, err := ioutil.ReadDir(directory)
+	files, err := os.ReadDir(directory)
 	if err != nil {
 		return false, err
 	}
@@ -363,10 +223,7 @@ func checkSequentialFileNames(directory string, maxNumber int) (bool, error) {
 		name := file.Name()
 		nameWithoutExt := name[:len(name)-len(filepath.Ext(name))]
 		// 将文件名转换为整数
-		number, err := strconv.Atoi(nameWithoutExt)
-		if err == nil { // 如果转换成功，标记该数字
-			fileNames[number] = true
-		}
+		fileNames[cast.ToInt(nameWithoutExt)] = true
 	}
 
 	// 检查从1到maxNumber的每个数字是否都有对应的文件

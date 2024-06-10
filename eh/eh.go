@@ -14,9 +14,11 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -186,6 +188,24 @@ func getImageInfoFromPage(c *http.Client, imagePageUrl string) (string, string) 
 	return imageTitle, imageUrl
 }
 
+// SaveImageWithRequest 通过requests库更方便的保存imageInfo所指向的图片
+func SaveImageWithRequest(c *http.Client, h http.Header, imageInfo utils.ImageInfo, saveDir string) {
+	dir, _ := filepath.Abs(saveDir)
+	_ = os.MkdirAll(dir, os.ModePerm)
+	filePath, _ := filepath.Abs(filepath.Join(dir, imageInfo.Title))
+	err := requests.URL(imageInfo.Url).
+		Client(c).
+		ToFile(filePath).
+		Headers(h).
+		Fetch(context.Background())
+	if err != nil {
+		log.Printf("Error saving image: %s by error %v", imageInfo.Title, err)
+	} else {
+		log.Println("Image saved:", imageInfo.Title)
+	}
+
+}
+
 func DownloadGallery(outputDir string, infoJsonPath string, galleryUrl string, onlyInfo bool) error {
 	//目录号
 	beginIndex := 0
@@ -213,6 +233,7 @@ func DownloadGallery(outputDir string, infoJsonPath string, galleryUrl string, o
 	fmt.Println(baseDir)
 
 	//FIXME:处理此逻辑不应该通过检测数量的方法
+	//应该是先检查连续性，再从最后断开的地方开始下载
 	if utils.FileExists(filepath.Join(baseDir, infoJsonPath)) {
 		fmt.Println("发现下载记录")
 		//获取已经下载的图片数量
@@ -242,44 +263,54 @@ func DownloadGallery(outputDir string, infoJsonPath string, galleryUrl string, o
 		fmt.Println("画廊信息获取完毕，程序自动退出。")
 		return nil
 	}
-	//重新初始化Collector
-
 	sumPage := int(math.Ceil(float64(galleryInfo.TotalImage) / float64(imageInOnePage)))
 	for i := beginIndex; i < sumPage; i++ {
 		fmt.Println("\nCurrent index:", i)
 		indexUrl := generateIndexURL(galleryUrl, i)
 		log.Printf("Current index url: %s", indexUrl)
-		var imagePageUrlList []string
-		//imagePageUrlList = getImagePageUrlList(collector, indexUrl)
-		imagePageUrlList = getImagePageUrlList(c, indexUrl)
+		imagePageUrlList := getImagePageUrlList(c, indexUrl)
 		if i == beginIndex {
 			//如果是第一次处理目录，需要去掉前面的余数
 			imagePageUrlList = imagePageUrlList[remainder:]
 		}
 
-		var imageInfoList []utils.ImageInfo
-		//根据imagePageUrls获取imageDataList
+		// Use a buffered channel as a semaphore to limit the number of goroutines running simultaneously
+		semaphore := make(chan struct{}, utils.Parallelism)
+		var wg sync.WaitGroup
 		for _, imagePageUrl := range imagePageUrlList {
-			//FIXME:这个地方实际上也是并发请求，但甚至没有做延迟处理
-			imageTitle, imageUrl := getImageInfoFromPage(c, imagePageUrl)
-			imageInfoList = append(imageInfoList, utils.ImageInfo{
-				Title: imageTitle,
-				Url:   imageUrl,
-			})
+			wg.Add(1)
+			// Acquire a semaphore slot before starting the goroutine
+			semaphore <- struct{}{}
+			go func(imagePageUrl string) {
+				defer wg.Done()
+				defer func() { <-semaphore }()
+				imageTitle, imageUrl := getImageInfoFromPage(c, imagePageUrl)
+				imageInfo := utils.ImageInfo{
+					Title: imageTitle,
+					Url:   imageUrl,
+				}
+				SaveImageWithRequest(c, buildJPEGRequestHeaders(), imageInfo, baseDir)
+			}(imagePageUrl)
+
+			//防止被ban，每保存一篇目录中的所有图片就sleep 1-3 seconds
+			sleepTime := rand.Float64()*1 + 2
+			log.Println("Sleep ", cast.ToString(sleepTime), " seconds...")
+			time.Sleep(time.Duration(sleepTime) * time.Second)
 		}
-		//防止被ban，每处理一篇目录就sleep 3-5 seconds
-		sleepTime := rand.Float64()*3 + 2
-		log.Println("Sleep ", cast.ToString(sleepTime), " seconds...")
-		time.Sleep(time.Duration(sleepTime) * time.Second)
 
-		// 进行本次处理目录中所有图片的批量保存
-		//utils.SaveImagesWithRequest(c, buildJPEGRequestHeaders(), imageInfoList, baseDir)
-		utils.SaveImagesWithMultiRequest(c, buildJPEGRequestHeaders(), imageInfoList, baseDir)
+		// Wait for all goroutines to complete
+		wg.Wait()
 
-		//防止被ban，每保存一篇目录中的所有图片就sleep 3-5 seconds
-		sleepTime = rand.Float64()*3 + 2
-		log.Println("Sleep ", cast.ToString(sleepTime), " seconds...")
-		time.Sleep(time.Duration(sleepTime) * time.Second)
+	}
+
+	success, err := utils.CheckSequentialFileNames(baseDir, galleryInfo.TotalImage)
+	if err != nil {
+		return err
+	}
+	if success {
+		fmt.Println("图片下载完毕")
+	} else {
+		fmt.Println("图片下载完毕，但是图片文件名不连续，自行查找问题")
 	}
 	return nil
 }
