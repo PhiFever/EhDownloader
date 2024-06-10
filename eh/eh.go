@@ -236,21 +236,19 @@ func DownloadGallery(outputDir string, infoJsonPath string, galleryUrl string, o
 	//应该是先检查连续性，再从最后断开的地方开始下载
 	if utils.FileExists(filepath.Join(baseDir, infoJsonPath)) {
 		fmt.Println("发现下载记录")
-		//获取已经下载的图片数量
-		downloadedImageCount := utils.GetFileTotal(baseDir, []string{".jpg", ".png"})
-		fmt.Println("Downloaded image count:", downloadedImageCount)
-		//计算剩余图片数量
-		remainImageCount := galleryInfo.TotalImage - downloadedImageCount
-		if remainImageCount == 0 {
+		success, missingNumbers := utils.CheckSequentialFileNames(baseDir, galleryInfo.TotalImage)
+		if success {
 			fmt.Println("本gallery已经下载完毕")
 			return nil
-		} else if remainImageCount < 0 {
-			return fmt.Errorf("下载记录有误！")
 		} else {
-			fmt.Println("剩余图片数量:", remainImageCount)
+			fmt.Println(missingNumbers)
+			//	TODO:重新下载缺失的图片
+			fmt.Println("剩余图片数量:", len(missingNumbers))
+			downloadedImageCount := galleryInfo.TotalImage - len(missingNumbers)
 			beginIndex = int(math.Floor(float64(downloadedImageCount) / float64(imageInOnePage)))
 			remainder = downloadedImageCount - imageInOnePage*beginIndex
 		}
+
 	} else {
 		//生成缓存文件
 		err := utils.BuildCache(baseDir, infoJsonPath, galleryInfo)
@@ -303,14 +301,12 @@ func DownloadGallery(outputDir string, infoJsonPath string, galleryUrl string, o
 
 	}
 
-	success, err := utils.CheckSequentialFileNames(baseDir, galleryInfo.TotalImage)
-	if err != nil {
-		return err
-	}
+	success, missingNumbers := utils.CheckSequentialFileNames(baseDir, galleryInfo.TotalImage)
 	if success {
 		fmt.Println("图片下载完毕")
 	} else {
-		fmt.Println("图片下载完毕，但是图片文件名不连续，自行查找问题")
+		fmt.Println(missingNumbers)
+		//	TODO:重新下载缺失的图片
 	}
 	return nil
 }

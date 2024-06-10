@@ -206,11 +206,12 @@ func SaveImagesWithMultiRequest(c *http.Client, h http.Header, imageInfoList []I
 }
 
 // CheckSequentialFileNames 检查指定目录中是否包含从1到maxNumber的连续数字命名的文件。
-func CheckSequentialFileNames(directory string, maxNumber int) (bool, error) {
+// 返回是否连续存在所有数字以及缺失的文件名数字。
+func CheckSequentialFileNames(directory string, maxNumber int) (bool, []int) {
 	// 读取目录中的所有文件和子目录（不会递归到子目录）
 	files, err := os.ReadDir(directory)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 
 	// 创建一个map来跟踪存在的文件名
@@ -222,16 +223,19 @@ func CheckSequentialFileNames(directory string, maxNumber int) (bool, error) {
 		// 去除文件名中的扩展名
 		name := file.Name()
 		nameWithoutExt := name[:len(name)-len(filepath.Ext(name))]
-		// 将文件名转换为整数
+		// 将文件名转换为整数，忽略转换错误
 		fileNames[cast.ToInt(nameWithoutExt)] = true
 	}
 
-	// 检查从1到maxNumber的每个数字是否都有对应的文件
+	// 检查从1到maxNumber的每个数字是否都有对应的文件，并记录缺失的数字
+	var missingNumbers []int
+	allPresent := true
 	for i := 1; i <= maxNumber; i++ {
 		if !fileNames[i] {
-			return false, nil
+			allPresent = false
+			missingNumbers = append(missingNumbers, i)
 		}
 	}
 
-	return true, nil
+	return allPresent, missingNumbers
 }
